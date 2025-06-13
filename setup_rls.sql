@@ -1,0 +1,1 @@
+ALTER TABLE student_registrations ENABLE ROW LEVEL SECURITY; CREATE POLICY admin_all_access ON student_registrations FOR ALL USING (EXISTS (SELECT 1 FROM user_roles WHERE user_roles.user_id = auth.uid() AND user_roles.role = 'admin'));

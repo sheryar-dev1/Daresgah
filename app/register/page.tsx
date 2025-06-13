@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase, supabaseAdmin } from '../../src/lib/supabase'
 import toast from 'react-hot-toast'
+import emailjs from '@emailjs/browser'
 import {
   UserCircleIcon,
   EnvelopeIcon,
@@ -21,6 +22,49 @@ import {
   BookOpenIcon,
   ShieldCheckIcon
 } from '@heroicons/react/24/outline'
+
+// Initialize EmailJS
+emailjs.init("3wuuSNI-g-Qnzj2KJ")
+
+// Function to generate random password
+const generateRandomPassword = () => {
+  const length = 12
+  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+  let password = ""
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * charset.length)
+    password += charset[randomIndex]
+  }
+  return password
+}
+
+// Function to send parent credentials email
+const sendParentCredentialsEmail = async (parentEmail: string, parentName: string, password: string, studentName: string) => {
+  try {
+    const templateParams = {
+      to_email: parentEmail,
+      to_name: parentName,
+      password: password,
+      student_name: studentName,
+      from_name: "School Management System",
+      reply_to: parentEmail
+    }
+
+    const result = await emailjs.send(
+      'service_z278vxx',
+      'template_h0t3x4g',
+      templateParams,
+      "3wuuSNI-g-Qnzj2KJ"
+    )
+
+    console.log('Email sent successfully:', result)
+    return true
+  } catch (error) {
+    console.error('Error sending email:', error)
+    return false
+  }
+}
+
 export default function RegisterPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
@@ -52,28 +96,31 @@ export default function RegisterPage() {
     confirmPassword: '',
   })
 
-  // Check and create table columns on component mount
+  // Check if user is already logged in
   useEffect(() => {
-    const checkTableColumns = async () => {
-      try {
-        // Verify the table exists by doing a simple select
-        const { error } = await supabase
-          .from('student_registrations')
-          .select('*')
-          .limit(0)
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session) {
+        // Get user role
+        const { data: roleData } = await supabase
+          .from('user_roles')
+          .select('role')
+          .eq('user_id', session.user.id)
+          .single()
 
-        if (error) {
-          console.error('Error accessing student_registrations table:', error)
-          toast.error('Error accessing database. Please contact support.')
+        if (roleData) {
+          // Redirect based on role
+          if (roleData.role === 'parent') {
+            router.push('/parent')
+          } else {
+            router.push('/dashboard')
+          }
         }
-      } catch (error) {
-        console.error('Error checking table:', error)
-        toast.error('Error accessing database. Please contact support.')
       }
     }
 
-    checkTableColumns()
-  }, [])
+    checkUser()
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -88,7 +135,10 @@ export default function RegisterPage() {
       // First create the auth user
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.studentEmail,
-        password: formData.password
+        password: formData.password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`
+        }
       })
 
       if (authError) {
@@ -130,6 +180,51 @@ export default function RegisterPage() {
         throw new Error(`Failed to create user role: ${roleError.message}`)
       }
 
+      // Generate random password for parent
+      const parentPassword = generateRandomPassword()
+
+      // Create parent auth account
+      const { data: parentAuthData, error: parentAuthError } = await supabase.auth.signUp({
+        email: formData.parentEmail,
+        password: parentPassword,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`
+        }
+      })
+
+      if (parentAuthError) {
+        // If parent account creation fails, clean up student account
+        try {
+          await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
+        } catch (deleteError) {
+          console.error('Error deleting student auth user:', deleteError)
+        }
+        throw new Error(`Failed to create parent account: ${parentAuthError.message}`)
+      }
+
+      if (!parentAuthData.user) {
+        throw new Error('Failed to create parent user account')
+      }
+
+      // Create parent role
+      const { error: parentRoleError } = await supabaseAdmin
+        .from('user_roles')
+        .insert([{
+          user_id: parentAuthData.user.id,
+          role: 'parent'
+        }])
+
+      if (parentRoleError) {
+        // If parent role creation fails, clean up both accounts
+        try {
+          await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
+          await supabaseAdmin.auth.admin.deleteUser(parentAuthData.user.id)
+        } catch (deleteError) {
+          console.error('Error deleting users:', deleteError)
+        }
+        throw new Error(`Failed to create parent role: ${parentRoleError.message}`)
+      }
+
       // Then create the registration record using admin client
       const registrationData = {
         name: formData.studentName,
@@ -149,7 +244,8 @@ export default function RegisterPage() {
         emergency_contact_phone: formData.emergencyContactPhone || null,
         emergency_contact_relation: formData.emergencyContactRelation || null,
         status: 'pending',
-        user_id: authData.user.id
+        user_id: authData.user.id,
+        parent_user_id: parentAuthData.user.id
       }
 
       // Create student registration using admin client
@@ -159,20 +255,33 @@ export default function RegisterPage() {
         .select()
 
       if (regError) {
-        // If registration fails, delete the auth user
+        // If registration fails, clean up both accounts
         try {
           await supabaseAdmin.auth.admin.deleteUser(authData.user.id)
+          await supabaseAdmin.auth.admin.deleteUser(parentAuthData.user.id)
         } catch (deleteError) {
-          console.error('Error deleting auth user:', deleteError)
+          console.error('Error deleting users:', deleteError)
         }
 
         console.error('Registration error:', regError)
         throw new Error(`Registration failed: ${regError.message}`)
       }
 
-      // Show success message
-      toast.success('Registration submitted successfully! Please wait for admin approval.')
-      
+      // Send parent credentials email
+      const emailSent = await sendParentCredentialsEmail(
+        formData.parentEmail,
+        formData.parentName,
+        parentPassword,
+        formData.studentName
+      )
+
+      if (!emailSent) {
+        console.warn('Failed to send parent credentials email')
+        toast.error('Registration successful but failed to send parent credentials email. Please contact support.')
+      } else {
+        toast.success('Registration submitted successfully! Parent account created and credentials sent via email.')
+      }
+
       // Clear form
       setFormData({
         studentName: '',
@@ -194,6 +303,9 @@ export default function RegisterPage() {
         password: '',
         confirmPassword: '',
       })
+
+      // Sign out to clear any stored tokens
+      await supabase.auth.signOut()
 
       // Wait for 3 seconds before redirecting
       setTimeout(() => {

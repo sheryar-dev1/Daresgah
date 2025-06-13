@@ -1,518 +1,244 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-'use client'
+import React from 'react'
+import Link from 'next/link'
+import { 
+  BookOpen, 
+  GraduationCap, 
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { supabase } from '../../src/lib/supabase'
-import { motion } from 'framer-motion'
-import toast from 'react-hot-toast'
-import { useAuth } from '../../src/context/AuthContext'
+  Clock,
+  DollarSign,
 
-
-type StudentInfo = {
-  name: string
-  grade: string
-  parent_name: string
-  parent_email: string
-}
-
-type Attendance = {
-  date: string
-  status: 'present' | 'absent' | 'late'
-}
-
-type Result = {
-  subject: string
-  marks: number
-  total_marks: number
-  grade: string
-  exam_date: string
-}
-
-type Fee = {
-  month: string
-  amount: number
-  status: 'paid' | 'pending' | 'overdue'
-  due_date: string
-}
-
-interface DashboardStats {
-  attendancePercentage: number
-  pendingFees: number
-  upcomingExams: number
-  currentGPA: number
-}
+  ChevronRight
+} from 'lucide-react'
 
 export default function StudentDashboard() {
-  const router = useRouter()
-  const { user, signOut } = useAuth()
-  const [studentInfo, setStudentInfo] = useState<StudentInfo | null>(null)
-  const [attendance, setAttendance] = useState<Attendance[]>([])
-  const [results, setResults] = useState<Result[]>([])
-  const [fees, setFees] = useState<Fee[]>([])
-  const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState('info')
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats>({
-    attendancePercentage: 0,
-    pendingFees: 0,
-    upcomingExams: 0,
-    currentGPA: 0,
-  })
-
-  useEffect(() => {
-    if (!user) {
-      router.push('/login')
-      return
-    }
-
-    fetchStudentInfo()
-  }, [user])
-
-  const fetchStudentInfo = async () => {
-    if (!user) return
-
-    try {
-      console.log('Fetching student info for user:', user.id)
-      
-      // First try to get from students table
-      const { data: studentData, error: studentError } = await supabase
-        .from('students')
-        .select('id, name, grade')
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      if (studentError) {
-        console.log('Error fetching from students table:', studentError)
-        if (studentError.code !== 'PGRST116') {
-          throw studentError
-        }
-      }
-
-      if (studentData) {
-        console.log('Found student data:', studentData)
-        
-        const { data: parentData, error: parentError } = await supabase
-          .from('parents')
-          .select('name, email')
-          .eq('user_id', user.id)
-          .maybeSingle()
-
-        if (parentError) {
-          console.log('Error fetching parent data:', parentError)
-          throw parentError
-        }
-
-        console.log('Found parent data:', parentData)
-        setStudentInfo({
-          name: studentData.name,
-          grade: studentData.grade,
-          parent_name: parentData?.name || 'Not available',
-          parent_email: parentData?.email || 'Not available',
-        })
-
-        // Now fetch other data since we have a valid student record
-        await Promise.all([
-          fetchAttendance(studentData.id),
-          fetchResults(studentData.id),
-          fetchFees(studentData.id)
-        ])
-        return
-      }
-
-      // If not found in students table, try student_registrations
-      const { data: registrationData, error: registrationError } = await supabase
-        .from('student_registrations')
-        .select('name, grade, parent_name, parent_email')
-        .eq('user_id', user.id)
-        .maybeSingle()
-
-      if (registrationError) {
-        console.log('Error fetching from registrations:', registrationError)
-        if (registrationError.code !== 'PGRST116') {
-          throw registrationError
-        }
-      }
-
-      if (registrationData) {
-        console.log('Found registration data:', registrationData)
-        setStudentInfo({
-          name: registrationData.name,
-          grade: registrationData.grade,
-          parent_name: registrationData.parent_name || 'Not available',
-          parent_email: registrationData.parent_email || 'Not available',
-        })
-        toast.success('Your registration is pending approval. You will have access to all features once approved.')
-        router.push('/pending')
-        return
-      }
-
-      // If we get here, no data was found in either table
-      console.log('No student data found in any table')
-      toast.error('No student information found. Please complete your registration first.')
-      router.push('/register')
-      
-    } catch (error) {
-      console.error('Error fetching student information:', error)
-      toast.error('Error fetching student information')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchAttendance = async (studentId: string) => {
-    try {
-      if (!studentId) {
-        console.error('No student ID provided')
-        return
-      }
-
-      const { data, error } = await supabase
-        .from('attendance')
-        .select('date, status')
-        .eq('student_id', studentId)
-        .order('date', { ascending: false })
-        .limit(10)
-
-      if (error) {
-        console.error('Supabase error:', error)
-        throw new Error(error.message)
-      }
-
-      if (!data) {
-        console.log('No attendance records found')
-        setAttendance([])
-        return
-      }
-
-      setAttendance(data)
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Error fetching attendance data'
-      console.error('Error fetching attendance:', errorMessage)
-      toast.error(errorMessage)
-    }
-  }
-
-  const fetchResults = async (studentId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('student_results')
-        .select('subject, total_marks, obtained_marks, date')
-        .eq('student_id', studentId)
-        .order('date', { ascending: false })
-
-      if (error) throw error
-
-      // Transform the data to match our Result type
-      const transformedResults = data?.map(result => ({
-        subject: result.subject,
-        marks: result.obtained_marks,
-        total_marks: result.total_marks,
-        grade: calculateGrade(result.obtained_marks, result.total_marks),
-        exam_date: result.date
-      })) || []
-
-      setResults(transformedResults)
-    } catch (error) {
-      console.error('Error fetching results:', error)
-      toast.error('Error fetching results')
-    }
-  }
-
-  const calculateGrade = (obtained: number, total: number): string => {
-    const percentage = (obtained / total) * 100
-    if (percentage >= 90) return 'A+'
-    if (percentage >= 80) return 'A'
-    if (percentage >= 70) return 'B'
-    if (percentage >= 60) return 'C'
-    if (percentage >= 50) return 'D'
-    return 'F'
-  }
-
-  const fetchFees = async (studentId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('fee_challans')
-        .select('amount, due_date, status')
-        .eq('student_id', studentId)
-        .order('due_date', { ascending: false })
-
-      if (error) throw error
-
-      // Transform the data to match our Fee type
-      const transformedFees = data?.map(fee => ({
-        month: new Date(fee.due_date).toLocaleString('default', { month: 'long', year: 'numeric' }),
-        amount: fee.amount,
-        status: fee.status === 'paid' ? 'paid' : 'pending' as 'paid' | 'pending' | 'overdue',
-        due_date: fee.due_date
-      })) || []
-
-      setFees(transformedFees)
-    } catch (error) {
-      console.error('Error fetching fees:', error)
-      toast.error('Error fetching fee information')
-    }
-  }
-
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return
-
-        // Fetch attendance
-        const { data: attendanceData } = await supabase
-          .from('attendance')
-          .select('status')
-          .eq('student_id', user.id)
-          .eq('date', new Date().toISOString().split('T')[0])
-
-        // Fetch fees
-        const { data: feesData } = await supabase
-          .from('fees')
-          .select('amount, paid')
-          .eq('student_id', user.id)
-          .eq('status', 'pending')
-
-        // Fetch upcoming exams
-        const { data: examsData } = await supabase
-          .from('exams')
-          .select('*')
-          .gte('date', new Date().toISOString())
-          .order('date', { ascending: true })
-          .limit(1)
-
-        // Fetch GPA
-        const { data: gradesData } = await supabase
-          .from('grades')
-          .select('grade')
-          .eq('student_id', user.id)
-
-        // Calculate stats
-        const attendancePercentage = attendanceData?.[0]?.status === 'present' ? 100 : 0
-        const pendingFees = feesData?.reduce((sum, fee) => sum + (fee.amount - (fee.paid || 0)), 0) || 0
-        const upcomingExams = examsData?.length || 0
-        const currentGPA = gradesData?.length ? 
-          gradesData.reduce((sum, grade) => sum + grade.grade, 0) / gradesData.length : 0
-
-        setDashboardStats({
-          attendancePercentage,
-          pendingFees,
-          upcomingExams,
-          currentGPA,
-        })
-      } catch (error) {
-        console.error('Error fetching dashboard data:', error)
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    fetchDashboardData()
-  }, [])
-
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-screen bg-gray-50">
-      <nav className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16">
-            <div className="flex items-center">
-              <h1 className="text-xl font-semibold text-gray-900">Student Dashboard</h1>
-            </div>
-            <div className="flex items-center">
-              <button
-                onClick={signOut}
-                className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-              >
-                Sign Out
-              </button>
+      {/* Top Navigation Bar */}
+      {/* <div className="fixed top-0 left-0 right-0 h-16 bg-white border-b border-gray-200 z-10">
+        <div className="flex items-center justify-between h-full px-8">
+          <div className="flex items-center space-x-4">
+            <h1 className="text-xl font-bold text-blue-600">Student Portal</h1>
+          </div>
+          <div className="flex items-center space-x-6">
+            <button className="relative p-2 text-gray-600 hover:text-blue-600">
+              <Bell className="h-6 w-6" />
+              <span className="absolute top-0 right-0 h-4 w-4 bg-red-500 rounded-full text-xs text-white flex items-center justify-center">3</span>
+            </button>
+            <div className="flex items-center space-x-3">
+              <div className="h-8 w-8 rounded-full bg-blue-100 flex items-center justify-center">
+                <User className="h-5 w-5 text-blue-600" />
+              </div>
+              <span className="text-gray-700">John Doe</span>
             </div>
           </div>
         </div>
-      </nav>
+      </div> */}
 
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          {/* Tabs */}
-          <div className="border-b border-gray-200 mb-6">
-            <nav className="-mb-px flex space-x-8">
-              <button
-                onClick={() => setActiveTab('info')}
-                className={`${
-                  activeTab === 'info'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-              >
-                Information
-              </button>
-              <button
-                onClick={() => setActiveTab('attendance')}
-                className={`${
-                  activeTab === 'attendance'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-              >
-                Attendance
-              </button>
-              <button
-                onClick={() => setActiveTab('results')}
-                className={`${
-                  activeTab === 'results'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-              >
-                Results
-              </button>
-              <button
-                onClick={() => setActiveTab('fees')}
-                className={`${
-                  activeTab === 'fees'
-                    ? 'border-indigo-500 text-indigo-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm`}
-              >
-                Fees
-              </button>
-            </nav>
+      {/* Sidebar */}
+      {/* <div className="fixed left-0 top-16 h-[calc(100vh-4rem)] w-64 bg-white border-r border-gray-200">
+        <nav className="p-4">
+          <a href="#" className="flex items-center px-4 py-3 text-blue-600 bg-blue-50 rounded-lg mb-2">
+            <Home className="h-5 w-5 mr-3" />
+            Dashboard
+          </a>
+          <Link href="/student/profile" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <User className="h-5 w-5 mr-3" />
+            Profile
+          </Link>
+          <Link href="/student/timetable" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <Calendar className="h-5 w-5 mr-3" />
+            Timetable
+          </Link>
+          <Link href="/student/results" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <GraduationCap className="h-5 w-5 mr-3" />
+            Results
+          </Link>
+          <Link href="/student/attendance" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <Clock className="h-5 w-5 mr-3" />
+            Attendance
+          </Link>
+          <Link href="/student/fees" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <DollarSign className="h-5 w-5 mr-3" />
+            Fees
+          </Link>
+          <a href="#" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg mb-2">
+            <FileText className="h-5 w-5 mr-3" />
+            Documents
+          </a>
+          <a href="#" className="flex items-center px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-lg">
+            <Settings className="h-5 w-5 mr-3" />
+            Settings
+          </a>
+        </nav>
+      </div> */}
+
+      {/* Main Content */}
+      <div className=" pt-20 p-8">
+        {/* Welcome Section */}
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">Welcome back, John!</h1>
+          <p className="text-gray-600">Here&apos;s your academic overview for today.</p>
+        </div>
+
+        {/* Quick Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Attendance</p>
+                <h3 className="text-2xl font-bold text-gray-900">85%</h3>
+              </div>
+              <div className="h-12 w-12 bg-green-100 rounded-full flex items-center justify-center">
+                <Clock className="h-6 w-6 text-green-600" />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">CGPA</p>
+                <h3 className="text-2xl font-bold text-gray-900">3.8</h3>
+              </div>
+              <div className="h-12 w-12 bg-blue-100 rounded-full flex items-center justify-center">
+                <GraduationCap className="h-6 w-6 text-blue-600" />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Courses</p>
+                <h3 className="text-2xl font-bold text-gray-900">6</h3>
+              </div>
+              <div className="h-12 w-12 bg-purple-100 rounded-full flex items-center justify-center">
+                <BookOpen className="h-6 w-6 text-purple-600" />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">Fees Due</p>
+                <h3 className="text-2xl font-bold text-gray-900">$0</h3>
+              </div>
+              <div className="h-12 w-12 bg-yellow-100 rounded-full flex items-center justify-center">
+                <DollarSign className="h-6 w-6 text-yellow-600" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Dashboard Content */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Today's Schedule */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">Today&apos;s Schedule</h3>
+              <Link href="/student/timetable" className="text-blue-600 text-sm flex items-center">
+                View All <ChevronRight className="h-4 w-4 ml-1" />
+              </Link>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center p-4 bg-blue-50 rounded-lg">
+                <div className="h-12 w-12 bg-blue-100 rounded-lg flex items-center justify-center mr-4">
+                  <Clock className="h-6 w-6 text-blue-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-gray-900">Mathematics</h4>
+                  <p className="text-sm text-gray-600">9:00 AM - 10:30 AM</p>
+                </div>
+              </div>
+              <div className="flex items-center p-4 bg-purple-50 rounded-lg">
+                <div className="h-12 w-12 bg-purple-100 rounded-lg flex items-center justify-center mr-4">
+                  <Clock className="h-6 w-6 text-purple-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-gray-900">Physics</h4>
+                  <p className="text-sm text-gray-600">11:00 AM - 12:30 PM</p>
+                </div>
+              </div>
+            </div>
           </div>
 
-          {/* Content */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="bg-white shadow rounded-lg p-6"
-          >
-            {activeTab === 'info' && studentInfo && (
-              <div className="space-y-4">
-                <h2 className="text-lg font-medium text-gray-900 mb-4">Student Information</h2>
+          {/* Recent Results */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">Recent Results</h3>
+              <Link href="/student/results" className="text-blue-600 text-sm flex items-center">
+                View All <ChevronRight className="h-4 w-4 ml-1" />
+              </Link>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                 <div>
-                  <h3 className="text-sm font-medium text-gray-500">Name</h3>
-                  <p className="mt-1 text-sm text-gray-900">{studentInfo.name}</p>
+                  <h4 className="font-medium text-gray-900">Mathematics Midterm</h4>
+                  <p className="text-sm text-gray-600">March 15, 2024</p>
                 </div>
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Grade</h3>
-                  <p className="mt-1 text-sm text-gray-900">{studentInfo.grade}</p>
-                </div>
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Parent Name</h3>
-                  <p className="mt-1 text-sm text-gray-900">{studentInfo.parent_name}</p>
-                </div>
-                <div>
-                  <h3 className="text-sm font-medium text-gray-500">Parent Email</h3>
-                  <p className="mt-1 text-sm text-gray-900">{studentInfo.parent_email}</p>
-                </div>
+                <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">A</span>
               </div>
-            )}
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <h4 className="font-medium text-gray-900">Physics Quiz</h4>
+                  <p className="text-sm text-gray-600">March 10, 2024</p>
+                </div>
+                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">B+</span>
+              </div>
+            </div>
+          </div>
 
-            {activeTab === 'attendance' && (
-              <div>
-                <h2 className="text-lg font-medium text-gray-900 mb-4">Attendance Record</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {attendance.map((record, index) => (
-                        <tr key={index}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{new Date(record.date).toLocaleDateString()}</td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              record.status === 'present' ? 'bg-green-100 text-green-800' :
-                              record.status === 'absent' ? 'bg-red-100 text-red-800' :
-                              'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {record.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          {/* Upcoming Assignments */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">Upcoming Assignments</h3>
+              <a href="#" className="text-blue-600 text-sm flex items-center">
+                View All <ChevronRight className="h-4 w-4 ml-1" />
+              </a>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-red-50 rounded-lg">
+                <div>
+                  <h4 className="font-medium text-gray-900">Math Project</h4>
+                  <p className="text-sm text-gray-600">Due in 2 days</p>
                 </div>
+                <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-medium">Urgent</span>
               </div>
-            )}
+              <div className="flex items-center justify-between p-4 bg-yellow-50 rounded-lg">
+                <div>
+                  <h4 className="font-medium text-gray-900">Physics Lab Report</h4>
+                  <p className="text-sm text-gray-600">Due in 5 days</p>
+                </div>
+                <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium">Pending</span>
+              </div>
+            </div>
+          </div>
 
-            {activeTab === 'results' && (
-              <div>
-                <h2 className="text-lg font-medium text-gray-900 mb-4">Academic Results</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Marks</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Grade</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Exam Date</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {results.map((result, index) => (
-                        <tr key={index}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.subject}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.marks}/{result.total_marks}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{result.grade}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{new Date(result.exam_date).toLocaleDateString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+          {/* Fee Status */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">Fee Status</h3>
+              <Link href="/student/fees" className="text-blue-600 text-sm flex items-center">
+                View Details <ChevronRight className="h-4 w-4 ml-1" />
+              </Link>
+            </div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between p-4 bg-green-50 rounded-lg">
+                <div>
+                  <h4 className="font-medium text-gray-900">Tuition Fee</h4>
+                  <p className="text-sm text-gray-600">Spring 2024</p>
                 </div>
+                <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">Paid</span>
               </div>
-            )}
-
-            {activeTab === 'fees' && (
-              <div>
-                <h2 className="text-lg font-medium text-gray-900 mb-4">Fee Details</h2>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Month</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Due Date</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {fees.map((fee, index) => (
-                        <tr key={index}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{fee.month}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${fee.amount}</td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                              fee.status === 'paid' ? 'bg-green-100 text-green-800' :
-                              fee.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                              'bg-red-100 text-red-800'
-                            }`}>
-                              {fee.status}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{new Date(fee.due_date).toLocaleDateString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <h4 className="font-medium text-gray-900">Lab Fee</h4>
+                  <p className="text-sm text-gray-600">Spring 2024</p>
                 </div>
+                <span className="px-3 py-1 bg-gray-100 text-gray-800 rounded-full text-sm font-medium">Pending</span>
               </div>
-            )}
-          </motion.div>
+            </div>
+          </div>
         </div>
-      </main>
+      </div>
     </div>
   )
-} 
+}

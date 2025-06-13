@@ -8,9 +8,7 @@ import { CalendarIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/
 interface AttendanceRecord {
   id: string
   date: string
-  status: 'present' | 'absent' | 'late'
-  subject: string
-  remarks: string
+  status: 'present' | 'absent' | 'leave'
 }
 
 interface AttendanceStats {
@@ -31,49 +29,110 @@ export default function StudentAttendance() {
     percentage: 0
   })
   const [loading, setLoading] = useState(true)
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const now = new Date()
+    const year = now.getFullYear()
+    const month = String(now.getMonth() + 1).padStart(2, '0')
+    console.log('Setting initial month:', { year, month, currentDate: now.toISOString() })
+    return `${year}-${month}`
+  })
 
   useEffect(() => {
     const fetchAttendance = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return
+        if (!user) {
+          console.log('No user found')
+          return
+        }
+        console.log('Current user ID:', user.id)
+        console.log('Selected month:', selectedMonth)
 
         // Get start and end dates for the selected month
         const [year, month] = selectedMonth.split('-')
-        const startDate = new Date(parseInt(year), parseInt(month) - 1, 1).toISOString()
-        const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString()
+        console.log('Parsed year and month:', { year, month })
+        
+        // Create dates in local timezone
+        const startDate = new Date(parseInt(year), parseInt(month) - 1, 1)
+        const endDate = new Date(parseInt(year), parseInt(month), 0)
+        
+        // Set time to start and end of day
+        startDate.setHours(0, 0, 0, 0)
+        endDate.setHours(23, 59, 59, 999)
+        
+        console.log('Local dates:', {
+          startDate: startDate.toLocaleString(),
+          endDate: endDate.toLocaleString(),
+          startDateISO: startDate.toISOString(),
+          endDateISO: endDate.toISOString()
+        })
 
-        // Fetch attendance records
+        // First, get the student's ID from the students table
+        const { data: studentData, error: studentError } = await supabase
+          .from('students')
+          .select('id')
+          .eq('user_id', user.id)
+          .single()
+
+        if (studentError) {
+          console.error('Error fetching student:', studentError)
+          throw studentError
+        }
+
+        if (!studentData) {
+          console.log('No student record found for user')
+          return
+        }
+
+        console.log('Found student ID:', studentData.id)
+
+        // Fetch attendance records from student_attendance table
         const { data: attendanceData, error } = await supabase
-          .from('attendance')
-          .select('*')
-          .eq('student_id', user.id)
-          .gte('date', startDate)
-          .lte('date', endDate)
+          .from('student_attendance')
+          .select('id, date, status')
+          .eq('student_id', studentData.id)
+          .gte('date', startDate.toISOString())
+          .lte('date', endDate.toISOString())
           .order('date', { ascending: false })
 
-        if (error) throw error
+        console.log('Raw attendance data:', attendanceData)
+        console.log('Query error if any:', error)
 
-        if (attendanceData) {
-          const typedAttendanceData = attendanceData as AttendanceRecord[]
-          setAttendance(typedAttendanceData)
-
-          // Calculate stats
-          const total = typedAttendanceData.length
-          const present = typedAttendanceData.filter((a: AttendanceRecord) => a.status === 'present').length
-          const absent = typedAttendanceData.filter((a: AttendanceRecord) => a.status === 'absent').length
-          const late = typedAttendanceData.filter((a: AttendanceRecord) => a.status === 'late').length
-          const percentage = total > 0 ? (present / total) * 100 : 0
-
-          setStats({
-            total,
-            present,
-            absent,
-            late,
-            percentage
-          })
+        if (error) {
+          console.error('Error fetching attendance:', error.message)
+          throw error
         }
+
+        if (!attendanceData || attendanceData.length === 0) {
+          console.log('No attendance records found for the selected month')
+          setAttendance([])
+          setStats({
+            total: 0,
+            present: 0,
+            absent: 0,
+            late: 0,
+            percentage: 0
+          })
+          return
+        }
+
+        const typedAttendanceData = attendanceData as AttendanceRecord[]
+        setAttendance(typedAttendanceData)
+
+        // Calculate stats
+        const total = typedAttendanceData.length
+        const present = typedAttendanceData.filter(a => a.status === 'present').length
+        const absent = typedAttendanceData.filter(a => a.status === 'absent').length
+        const late = typedAttendanceData.filter(a => a.status === 'leave').length
+        const percentage = total > 0 ? (present / total) * 100 : 0
+
+        setStats({
+          total,
+          present,
+          absent,
+          late,
+          percentage
+        })
       } catch (error) {
         console.error('Error fetching attendance:', error)
       } finally {
@@ -90,7 +149,7 @@ export default function StudentAttendance() {
         return 'bg-green-100 text-green-800'
       case 'absent':
         return 'bg-red-100 text-red-800'
-      case 'late':
+      case 'leave':
         return 'bg-yellow-100 text-yellow-800'
       default:
         return 'bg-gray-100 text-gray-800'
@@ -131,7 +190,7 @@ export default function StudentAttendance() {
               <CalendarIcon className="w-6 h-6 text-white" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Total Classes</p>
+              <p className="text-sm font-medium text-gray-600">Total Attendance</p>
               <p className="text-2xl font-semibold text-gray-900">{stats.total}</p>
             </div>
           </div>
@@ -199,9 +258,8 @@ export default function StudentAttendance() {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Day</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Remarks</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -210,13 +268,14 @@ export default function StudentAttendance() {
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {new Date(record.date).toLocaleDateString()}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{record.subject}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {new Date(record.date).toLocaleDateString('en-US', { weekday: 'long' })}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm">
                     <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getStatusColor(record.status)}`}>
                       {record.status.charAt(0).toUpperCase() + record.status.slice(1)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{record.remarks}</td>
                 </tr>
               ))}
             </tbody>
